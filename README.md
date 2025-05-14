@@ -139,17 +139,110 @@ local function getRanks()
                 end
             end
         end
+        
+        -- Verificar também em outros locais possíveis
+        for _, possibleLocation in pairs({"Ranks", "Settings", "RankSettings", "Config"}) do
+            local rankFolder = hdAdmin:FindFirstChild(possibleLocation)
+            if rankFolder and rankFolder:IsA("ModuleScript") then
+                local success, data = pcall(function()
+                    return require(rankFolder)
+                end)
+                
+                if success and type(data) == "table" then
+                    -- Tentar extrair ranks de várias estruturas possíveis
+                    local rankData = data.Ranks or data.RankList or data
+                    
+                    if type(rankData) == "table" then
+                        for name, info in pairs(rankData) do
+                            if type(info) == "table" and (info.RankId or info.Id or info.Rank) then
+                                table.insert(ranks, {
+                                    Name = name,
+                                    Id = info.RankId or info.Id or info.Rank
+                                })
+                            elseif type(name) == "string" and type(info) == "number" then
+                                table.insert(ranks, {
+                                    Name = name,
+                                    Id = info
+                                })
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
     
-    -- Tentativa 2: Se os ranks não foram encontrados, tentar métodos alternativos
+    -- Tentativa 2: Verificar diretamente os comandos do HD Admin
+    local function scanCommands()
+        local commands = game:GetService("ReplicatedStorage"):FindFirstChild("HDAdmin"):FindFirstChild("Commands")
+        if commands and commands:IsA("ModuleScript") then
+            local success, commandData = pcall(function()
+                return require(commands)
+            end)
+            
+            if success and type(commandData) == "table" then
+                for cmdName, cmdData in pairs(commandData) do
+                    if cmdName:lower() == "rank" or cmdName:lower() == "setrank" then
+                        if type(cmdData) == "table" and cmdData.Settings and type(cmdData.Settings) == "table" then
+                            local ranksList = cmdData.Settings.Ranks
+                            if type(ranksList) == "table" then
+                                for rankName, rankId in pairs(ranksList) do
+                                    table.insert(ranks, {
+                                        Name = rankName,
+                                        Id = rankId
+                                    })
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    pcall(scanCommands)
+    
+    -- Tentativa 3: Se os ranks não foram encontrados, tentar obter do DataStore (simulação)
     if #ranks == 0 then
-        -- Lista de ranks comuns do HD Admin para teste
+        pcall(function()
+            -- Algumas versões do HD Admin armazenam ranks no Player
+            for _, player in pairs(game:GetService("Players"):GetPlayers()) do
+                local hdAdminData = player:FindFirstChild("HDAdminData")
+                if hdAdminData then
+                    for _, item in pairs(hdAdminData:GetChildren()) do
+                        if item.Name == "Ranks" and item:IsA("ModuleScript") then
+                            local success, rankData = pcall(function()
+                                return require(item)
+                            end)
+                            
+                            if success and type(rankData) == "table" then
+                                for rankName, rankInfo in pairs(rankData) do
+                                    if type(rankInfo) == "table" and rankInfo.Id then
+                                        table.insert(ranks, {
+                                            Name = rankName,
+                                            Id = rankInfo.Id
+                                        })
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    
+    -- Tentativa 4: Se ainda não temos ranks, usar os ranks padrão do HD Admin
+    if #ranks == 0 then
+        -- Lista de ranks comuns do HD Admin
         local commonRanks = {
-            {Name = "Owner", Id = 1},
-            {Name = "HeadAdmin", Id = 2},
-            {Name = "Admin", Id = 3},
-            {Name = "Mod", Id = 4},
-            {Name = "VIP", Id = 5}
+            {Name = "Owner", Id = 4},
+            {Name = "HeadAdmin", Id = 3},
+            {Name = "Admin", Id = 2},
+            {Name = "Mod", Id = 1},
+            {Name = "VIP", Id = 5},
+            {Name = "Special", Id = 6},
+            {Name = "Member", Id = 7}
         }
         
         for _, rank in ipairs(commonRanks) do
@@ -157,54 +250,204 @@ local function getRanks()
         end
     end
     
-    return ranks
-end
-
--- Função para tentar aplicar um rank ao jogador
-local function applyRank(player, rankId)
-    -- Método 1: Usando eventos remotos do HD Admin
-    local hdAdminFolder = game:GetService("ReplicatedStorage"):FindFirstChild("HDAdminSetup")
-    if hdAdminFolder then
-        local function findRemoteEvent(parent)
-            for _, child in pairs(parent:GetChildren()) do
-                if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
-                    return child
-                elseif #child:GetChildren() > 0 then
-                    local found = findRemoteEvent(child)
-                    if found then return found end
-                end
-            end
-            return nil
-        end
-        
-        local remoteEvent = findRemoteEvent(hdAdminFolder)
-        if remoteEvent then
-            -- Tentativa 1: Comando direto de rank
-            pcall(function()
-                remoteEvent:FireServer("SetRank", player.UserId, rankId)
-            end)
-            
-            -- Tentativa 2: Comando alternativo
-            pcall(function()
-                remoteEvent:FireServer("Command", "perm "..player.Name.." "..rankId)
-            end)
-            
-            -- Tentativa 3: Comando de permrank
-            pcall(function()
-                remoteEvent:FireServer("Command", "permrank "..player.Name.." "..rankId)
-            end)
+    -- Remover duplicatas por nome
+    local uniqueRanks = {}
+    local rankNames = {}
+    
+    for _, rank in ipairs(ranks) do
+        if not rankNames[rank.Name] then
+            rankNames[rank.Name] = true
+            table.insert(uniqueRanks, rank)
         end
     end
     
-    -- Método 2: Manipulação direta (apenas para testes)
-    local success = pcall(function()
-        -- Esta parte é apenas conceitual e pode não funcionar devido às medidas de segurança do Roblox
-        local playerRankData = game:GetService("DataStoreService"):GetDataStore("HDAdmin_"..game.PlaceId):GetAsync("Ranks_"..player.UserId)
-        if playerRankData then
-            playerRankData.Rank = rankId
-            game:GetService("DataStoreService"):GetDataStore("HDAdmin_"..game.PlaceId):SetAsync("Ranks_"..player.UserId, playerRankData)
+    return uniqueRanks
+end
+
+-- Função para tentar aplicar um rank ao jogador
+local function applyRank(player, rankId, rankName)
+    local success = false
+    
+    -- Encontrar todas as RemoteEvents e RemoteFunctions do HD Admin
+    local function findRemoteObjects()
+        local remotes = {}
+        
+        -- Procurar em ReplicatedStorage
+        for _, service in pairs({game:GetService("ReplicatedStorage"), game:GetService("ServerScriptService")}) do
+            local function searchFolder(folder)
+                for _, item in pairs(folder:GetChildren()) do
+                    if item:IsA("RemoteEvent") or item:IsA("RemoteFunction") then
+                        table.insert(remotes, item)
+                    elseif #item:GetChildren() > 0 then
+                        searchFolder(item)
+                    end
+                end
+            end
+            
+            searchFolder(service)
         end
-    end)
+        
+        return remotes
+    end
+    
+    -- Método 1: Localizar e usar os eventos remotos específicos do HD Admin
+    local hdAdmin = game:GetService("ReplicatedStorage"):FindFirstChild("HDAdmin")
+    local hdAdminSetup = game:GetService("ReplicatedStorage"):FindFirstChild("HDAdminSetup")
+    
+    -- Tentativa 1: Procurar pelo remote específico para comandos
+    local commandRemote
+    
+    if hdAdmin then
+        commandRemote = hdAdmin:FindFirstChild("Remote") or hdAdmin:FindFirstChild("CommandRemote")
+    end
+    
+    if not commandRemote and hdAdminSetup then
+        commandRemote = hdAdminSetup:FindFirstChild("Remote") or hdAdminSetup:FindFirstChild("CommandRemote")
+        
+        if not commandRemote then
+            for _, child in pairs(hdAdminSetup:GetDescendants()) do
+                if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                    commandRemote = child
+                    break
+                end
+            end
+        end
+    end
+    
+    -- Tentativa 2: Se não encontrou o remote específico, tentar todos os remotes no jogo
+    if not commandRemote then
+        local allRemotes = findRemoteObjects()
+        
+        for _, remote in pairs(allRemotes) do
+            -- Usar o nome para identificar possíveis remotes do HD Admin
+            if remote.Name:lower():match("admin") or 
+               remote.Name:lower():match("command") or 
+               remote.Name:lower():match("remote") then
+                commandRemote = remote
+                break
+            end
+        end
+        
+        -- Se ainda não encontrou, usar o primeiro remote encontrado
+        if not commandRemote and #allRemotes > 0 then
+            commandRemote = allRemotes[1]
+        end
+    end
+    
+    -- Se encontrou algum remote, tentar todos os métodos de comando
+    if commandRemote then
+        -- Lista de comandos para tentar
+        local commands = {
+            "permrank "..player.Name.." "..rankName,
+            "perm "..player.Name.." "..rankName,
+            "setrank "..player.Name.." "..rankName,
+            "rank "..player.Name.." "..rankName,
+            "admin "..player.Name.." "..rankName,
+            "permrank "..player.Name.." "..rankId,
+            "perm "..player.Name.." "..rankId,
+            "setrank "..player.Name.." "..rankId,
+            "rank "..player.Name.." "..rankId,
+            "admin "..player.Name.." "..rankId
+        }
+        
+        -- Tentar cada comando
+        for _, command in ipairs(commands) do
+            -- Método 1: Enviar como comando diretamente
+            pcall(function()
+                if commandRemote:IsA("RemoteEvent") then
+                    commandRemote:FireServer(command)
+                    success = true
+                elseif commandRemote:IsA("RemoteFunction") then
+                    commandRemote:InvokeServer(command)
+                    success = true
+                end
+            end)
+            
+            -- Método 2: Enviar como [tipo, comando]
+            pcall(function()
+                if commandRemote:IsA("RemoteEvent") then
+                    commandRemote:FireServer("Command", command)
+                    success = true
+                elseif commandRemote:IsA("RemoteFunction") then
+                    commandRemote:InvokeServer("Command", command)
+                    success = true
+                end
+            end)
+            
+            -- Método 3: Enviar apenas o nome do comando
+            pcall(function()
+                if commandRemote:IsA("RemoteEvent") then
+                    commandRemote:FireServer(command:split(" ")[1], player.Name, rankName or rankId)
+                    success = true
+                elseif commandRemote:IsA("RemoteFunction") then
+                    commandRemote:InvokeServer(command:split(" ")[1], player.Name, rankName or rankId)
+                    success = true
+                end
+            end)
+            
+            -- Se algum método funcionou, parar de tentar
+            if success then break end
+        end
+    end
+    
+    -- Método 3: Tentar acessar o sistema de ranks diretamente (apenas para versões específicas do HD Admin)
+    if not success then
+        pcall(function()
+            -- Tentar encontrar o módulo de gerenciamento de ranks
+            local rankModule = game:GetService("ReplicatedStorage"):FindFirstChild("HDAdmin"):FindFirstChild("RankManager")
+            if rankModule and rankModule:IsA("ModuleScript") then
+                local rankManager = require(rankModule)
+                if typeof(rankManager) == "table" and rankManager.SetRank then
+                    rankManager.SetRank(player, rankId, true) -- O true indica rank permanente
+                    success = true
+                end
+            end
+        end)
+    end
+    
+    -- Método 4: Tentar explorar a estrutura de "Owner"
+    if not success then
+        pcall(function()
+            -- Em algumas versões do HD Admin, o Owner tem acesso direto ao sistema
+            local ownerModule = game:GetService("ReplicatedStorage"):FindFirstChild("HDAdmin"):FindFirstChild("Owner")
+            if ownerModule then
+                -- Tentativa de se colocar como Owner temporariamente
+                local currentPerms = {}
+                
+                -- Backup das permissões atuais (medida de segurança)
+                for _, child in pairs(ownerModule:GetChildren()) do
+                    if child:IsA("StringValue") and child.Name == player.UserId then
+                        currentPerms[child.Name] = child.Value
+                    end
+                end
+                
+                -- Criar valor temporário
+                local tempPerm = Instance.new("StringValue")
+                tempPerm.Name = player.UserId
+                tempPerm.Value = "Owner"
+                tempPerm.Parent = ownerModule
+                
+                -- Tentar executar comando como Owner
+                if commandRemote then
+                    pcall(function()
+                        if commandRemote:IsA("RemoteEvent") then
+                            commandRemote:FireServer("permrank "..player.Name.." "..rankName)
+                            success = true
+                        end
+                    end)
+                end
+                
+                -- Restaurar permissões originais
+                tempPerm:Destroy()
+                for name, value in pairs(currentPerms) do
+                    local perm = Instance.new("StringValue")
+                    perm.Name = name
+                    perm.Value = value
+                    perm.Parent = ownerModule
+                end
+            end
+        end)
+    end
     
     return success
 end
@@ -247,7 +490,7 @@ function HDAdminTester.Start()
                     rankButton.BackgroundColor3 = Color3.fromRGB(70, 70, 120)
                     
                     -- Tentar aplicar o rank
-                    local success = applyRank(player, rank.Id)
+                    local success = applyRank(player, rank.Id, rank.Name)
                     
                     if success then
                         rankButton.Text = "✓ "..rank.Name.." aplicado!"
